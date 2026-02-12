@@ -2,9 +2,13 @@ CLUSTER=${CLUSTER:-borealis}
 case "$CLUSTER" in
   borealis)
     CLUSTER_USER=guoqiong
+    DEFAULT_TEST_BACKEND=xccl
+    DEFAULT_TEST_DEVICE=xpu
     ;;
   polaris)
     CLUSTER_USER=songhappy
+    DEFAULT_TEST_BACKEND=nccl
+    DEFAULT_TEST_DEVICE=cuda
     ;;
   *)
     echo "Invalid CLUSTER=$CLUSTER. Use one of: borealis, polaris"
@@ -14,8 +18,8 @@ esac
 
 BASE_HOME=/home/${CLUSTER_USER}
 source "${BASE_HOME}/env-3.sh"
-export TEST_BACKEND=xccl
-export TEST_DEVICE=xpu
+export TEST_BACKEND=${TEST_BACKEND:-$DEFAULT_TEST_BACKEND}
+export TEST_DEVICE=${TEST_DEVICE:-$DEFAULT_TEST_DEVICE}
 export NPROC_PER_NODE=${NPROC_PER_NODE:-4}
 COMM_IMPL=${COMM_IMPL:-both}
 
