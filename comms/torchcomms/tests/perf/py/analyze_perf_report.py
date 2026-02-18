@@ -7,12 +7,15 @@ For each collective + SendMsgSize(B), this script compares:
 - XPU comms vs XPU c10d
 
 Output is a grouped CSV (one section per collective).
+
+Useage: python3 analyze_perf_report.py --perf-dir /home/guoqiong/git/torchcomms/perf_results_binding --output-csv /home/guoqiong/git/torchcomms/perf_results_binding/analyze_perf_report.csv
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,9 +29,11 @@ CSV_HEADER = [
     "AvgCUDA_comms(us)",
     "AvgXPU_c10d(us)",
     "AvgCUDA_c10d(us)",
-    "PctDiff_comms_cuda_vs_xpu(%)",
-    "PctDiff_c10d_cuda_vs_xpu(%)",
+    "PctDiff_comms_xpu_vs_cuda(%)",
+    "PctDiff_c10d_xpu_vs_cuda(%)",
     "PctDiff_xpu_comms_vs_c10d(%)",
+    "PctDiff_cuda_comms_vs_c10d(%)",
+    "gapChange(%)",
 ]
 
 
@@ -81,10 +86,26 @@ def find_latest_log(perf_dir: Path, must_include: list[str], any_include: list[s
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def pct_diff_val(numerator: float, denominator: float) -> float:
+    if denominator == 0:
+        return float("inf")
+    return ((numerator / denominator) - 1.0) * 100.0
+
+
 def pct_diff_str(numerator: float, denominator: float) -> str:
     if denominator == 0:
         return "inf"
-    return f"{((numerator / denominator) - 1.0) * 100.0:.2f}"
+    return f"{pct_diff_val(numerator, denominator):.2f}"
+
+
+def fmt_num(val: float) -> str:
+    if math.isnan(val):
+        return "nan"
+    if val == float("inf"):
+        return "inf"
+    if val == float("-inf"):
+        return "-inf"
+    return f"{val:.2f}"
 
 
 def default_perf_dir() -> Path:
@@ -131,6 +152,9 @@ def write_comprehensive_csv(
                 avg_cuda_comms = cuda_comms[coll][size]
                 avg_xpu_c10d = xpu_c10d[coll][size]
                 avg_cuda_c10d = cuda_c10d[coll][size]
+                pct_comms_xpu_vs_cuda = pct_diff_val(avg_cuda_comms, avg_xpu_comms)
+                pct_c10d_xpu_vs_cuda = pct_diff_val(avg_cuda_c10d, avg_xpu_c10d)
+                gap_change = pct_comms_xpu_vs_cuda - pct_c10d_xpu_vs_cuda
 
                 writer.writerow(
                     [
@@ -139,9 +163,11 @@ def write_comprehensive_csv(
                         f"{avg_cuda_comms:.2f}",
                         f"{avg_xpu_c10d:.2f}",
                         f"{avg_cuda_c10d:.2f}",
-                        pct_diff_str(avg_cuda_comms, avg_xpu_comms),
-                        pct_diff_str(avg_cuda_c10d, avg_xpu_c10d),
-                        pct_diff_str(avg_xpu_comms, avg_xpu_c10d),
+                        fmt_num(pct_comms_xpu_vs_cuda),
+                        fmt_num(pct_c10d_xpu_vs_cuda),
+                        pct_diff_str(avg_xpu_c10d, avg_xpu_comms),
+                        pct_diff_str(avg_cuda_c10d, avg_cuda_comms),
+                        fmt_num(gap_change),
                     ]
                 )
 
