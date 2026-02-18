@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Compare TorchComms collective perf logs between CUDA and XPU.
+"""Build a comprehensive perf comparison report from TorchComms logs.
 
-Computes row-wise:
-    pct_diff = (t_cuda / t_xpu - 1) * 100
-using Avg(us), matched by (collective, SendMsgSize(B)).
+For each collective + SendMsgSize(B), this script compares:
+- CUDA vs XPU using comms
+- CUDA vs XPU using c10d
+- XPU comms vs XPU c10d
 
-CSV output format:
-- One section per collective
-- First line is the collective name
-- Followed by a table header and rows
+Output is a grouped CSV (one section per collective).
 """
 
 from __future__ import annotations
@@ -22,7 +20,16 @@ from pathlib import Path
 
 SECTION_RE = re.compile(r"^===\s+Synchronous\s+(.+?)\s+Performance\s+===$")
 ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([0-9]*\.?[0-9]+)")
-CSV_HEADER = ["SendMsgSize(B)", "AvgCUDA(us)", "AvgXPU(us)", "PctDiff(%)"]
+CSV_HEADER = [
+    "SendMsgSize(B)",
+    "AvgXPU_comms(us)",
+    "AvgCUDA_comms(us)",
+    "AvgXPU_c10d(us)",
+    "AvgCUDA_c10d(us)",
+    "PctDiff_comms_cuda_vs_xpu(%)",
+    "PctDiff_c10d_cuda_vs_xpu(%)",
+    "PctDiff_xpu_comms_vs_c10d(%)",
+]
 
 
 def parse_log(path: Path) -> dict[str, dict[int, float]]:
@@ -52,54 +59,92 @@ def parse_log(path: Path) -> dict[str, dict[int, float]]:
     return by_collective
 
 
-def find_latest_log(perf_dir: Path, keyword: str) -> Path:
-    candidates = [
-        p
-        for p in perf_dir.glob("*.log")
-        if keyword.lower() in p.name.lower() and p.is_file() and p.stat().st_size > 0
-    ]
+def find_latest_log(perf_dir: Path, must_include: list[str], any_include: list[str] | None = None) -> Path:
+    candidates: list[Path] = []
+
+    for p in perf_dir.glob("*.log"):
+        if not p.is_file() or p.stat().st_size == 0:
+            continue
+        name = p.name.lower()
+        if any(token.lower() not in name for token in must_include):
+            continue
+        if any_include and not any(token.lower() in name for token in any_include):
+            continue
+        candidates.append(p)
+
     if not candidates:
+        wanted = ", ".join(must_include + (any_include or []))
         raise FileNotFoundError(
-            f"No non-empty log found in {perf_dir} with '{keyword}' in filename."
+            f"No non-empty log found in {perf_dir} matching tokens: {wanted}"
         )
+
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def pct_diff_str(t_cuda: float, t_xpu: float) -> str:
-    if t_xpu == 0:
+def pct_diff_str(numerator: float, denominator: float) -> str:
+    if denominator == 0:
         return "inf"
-    return f"{((t_cuda / t_xpu) - 1.0) * 100.0:.2f}"
+    return f"{((numerator / denominator) - 1.0) * 100.0:.2f}"
 
 
-def write_grouped_csv(
+def default_perf_dir() -> Path:
+    script = Path(__file__).resolve()
+    repo_perf = script.parents[5] / "perf_results"
+    if repo_perf.exists():
+        return repo_perf
+    return script.parent
+
+
+def write_comprehensive_csv(
     output_csv: Path,
-    cuda_data: dict[str, dict[int, float]],
-    xpu_data: dict[str, dict[int, float]],
+    xpu_comms: dict[str, dict[int, float]],
+    cuda_comms: dict[str, dict[int, float]],
+    xpu_c10d: dict[str, dict[int, float]],
+    cuda_c10d: dict[str, dict[int, float]],
 ) -> bool:
-    """Write grouped CSV and return True if any overlapping rows were written."""
     wrote_any = False
     output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    common_collectives = sorted(
+        set(xpu_comms) & set(cuda_comms) & set(xpu_c10d) & set(cuda_c10d)
+    )
 
     with output_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
 
-        for coll in sorted(set(cuda_data) & set(xpu_data)):
-            common_sizes = sorted(set(cuda_data[coll]) & set(xpu_data[coll]))
+        for coll in common_collectives:
+            common_sizes = sorted(
+                set(xpu_comms[coll])
+                & set(cuda_comms[coll])
+                & set(xpu_c10d[coll])
+                & set(cuda_c10d[coll])
+            )
             if not common_sizes:
                 continue
 
             wrote_any = True
             writer.writerow([coll])
             writer.writerow(CSV_HEADER)
+
             for size in common_sizes:
-                t_cuda = cuda_data[coll][size]
-                t_xpu = xpu_data[coll][size]
-                writer.writerow([
-                    size,
-                    f"{t_cuda:.2f}",
-                    f"{t_xpu:.2f}",
-                    pct_diff_str(t_cuda, t_xpu),
-                ])
+                avg_xpu_comms = xpu_comms[coll][size]
+                avg_cuda_comms = cuda_comms[coll][size]
+                avg_xpu_c10d = xpu_c10d[coll][size]
+                avg_cuda_c10d = cuda_c10d[coll][size]
+
+                writer.writerow(
+                    [
+                        size,
+                        f"{avg_xpu_comms:.2f}",
+                        f"{avg_cuda_comms:.2f}",
+                        f"{avg_xpu_c10d:.2f}",
+                        f"{avg_cuda_c10d:.2f}",
+                        pct_diff_str(avg_cuda_comms, avg_xpu_comms),
+                        pct_diff_str(avg_cuda_c10d, avg_xpu_c10d),
+                        pct_diff_str(avg_xpu_comms, avg_xpu_c10d),
+                    ]
+                )
+
             writer.writerow([])
 
     return wrote_any
@@ -107,59 +152,90 @@ def write_grouped_csv(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Compare CUDA vs XPU collective perf logs using Avg(us)."
+        description="Create comprehensive CUDA/XPU and comms/c10d perf comparison CSV."
     )
     parser.add_argument(
         "--perf-dir",
         type=Path,
-        default=Path(__file__).resolve().parent,
-        help="Directory containing perf log files (default: script directory).",
+        default=default_perf_dir(),
+        help="Directory containing perf logs (default: torchcomms/perf_results).",
     )
     parser.add_argument(
-        "--cuda-log",
+        "--xpu-comms-log",
         type=Path,
         default=None,
-        help="Path to CUDA log. If omitted, latest non-empty '*cuda*.log' in --perf-dir.",
+        help="Path to XPU comms log. If omitted, uses latest '*xpu*comms*.log'.",
     )
     parser.add_argument(
-        "--xpu-log",
+        "--cuda-comms-log",
         type=Path,
         default=None,
-        help="Path to XPU log. If omitted, latest non-empty '*xpu*.log' in --perf-dir.",
+        help="Path to CUDA comms log. If omitted, uses latest '*cuda*comms*.log'.",
+    )
+    parser.add_argument(
+        "--xpu-c10d-log",
+        type=Path,
+        default=None,
+        help="Path to XPU c10d log. If omitted, uses latest '*xpu*(c10d|c10)*.log'.",
+    )
+    parser.add_argument(
+        "--cuda-c10d-log",
+        type=Path,
+        default=None,
+        help="Path to CUDA c10d log. If omitted, uses latest '*cuda*(c10d|c10)*.log'.",
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
         default=None,
-        help="Path to CSV report file. Default: <perf-dir>/compare_cuda_xpu_report.csv",
+        help="Path to output CSV. Default: <perf-dir>/analyze_perf_report.csv",
     )
     args = parser.parse_args()
 
     try:
-        cuda_log = args.cuda_log or find_latest_log(args.perf_dir, "cuda")
-        xpu_log = args.xpu_log or find_latest_log(args.perf_dir, "xpu")
+        xpu_comms_log = args.xpu_comms_log or find_latest_log(
+            args.perf_dir, must_include=["xpu", "comms"]
+        )
+        cuda_comms_log = args.cuda_comms_log or find_latest_log(
+            args.perf_dir, must_include=["cuda", "comms"]
+        )
+        xpu_c10d_log = args.xpu_c10d_log or find_latest_log(
+            args.perf_dir, must_include=["xpu"], any_include=["c10d", "c10"]
+        )
+        cuda_c10d_log = args.cuda_c10d_log or find_latest_log(
+            args.perf_dir, must_include=["cuda"], any_include=["c10d", "c10"]
+        )
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
 
-    if not cuda_log.exists() or cuda_log.stat().st_size == 0:
-        print(f"ERROR: CUDA log missing or empty: {cuda_log}", file=sys.stderr)
-        return 2
-    if not xpu_log.exists() or xpu_log.stat().st_size == 0:
-        print(f"ERROR: XPU log missing or empty: {xpu_log}", file=sys.stderr)
-        return 2
+    for p in [xpu_comms_log, cuda_comms_log, xpu_c10d_log, cuda_c10d_log]:
+        if not p.exists() or p.stat().st_size == 0:
+            print(f"ERROR: missing or empty log: {p}", file=sys.stderr)
+            return 2
 
-    output_csv = args.output_csv or (args.perf_dir / "compare_cuda_xpu_report.csv")
-    cuda_data = parse_log(cuda_log)
-    xpu_data = parse_log(xpu_log)
+    xpu_comms = parse_log(xpu_comms_log)
+    cuda_comms = parse_log(cuda_comms_log)
+    xpu_c10d = parse_log(xpu_c10d_log)
+    cuda_c10d = parse_log(cuda_c10d_log)
 
-    print(f"CUDA log: {cuda_log}")
-    print(f"XPU  log: {xpu_log}")
-    print("Formula: (t_cuda / t_xpu - 1) * 100%")
+    output_csv = args.output_csv or (args.perf_dir / "analyze_perf_report.csv")
 
-    wrote_any = write_grouped_csv(output_csv, cuda_data, xpu_data)
+    print(f"XPU  comms log: {xpu_comms_log}")
+    print(f"CUDA comms log: {cuda_comms_log}")
+    print(f"XPU  c10d  log: {xpu_c10d_log}")
+    print(f"CUDA c10d  log: {cuda_c10d_log}")
+
+    wrote_any = write_comprehensive_csv(
+        output_csv,
+        xpu_comms,
+        cuda_comms,
+        xpu_c10d,
+        cuda_c10d,
+    )
+
     if not wrote_any:
-        print("No overlapping collectives between CUDA and XPU logs.")
+        print("No overlapping collective/message-size entries across all four logs.")
         print(f"CSV report written to: {output_csv}")
         return 1
 
