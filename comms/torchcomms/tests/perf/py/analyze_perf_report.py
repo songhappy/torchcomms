@@ -8,7 +8,7 @@ For each collective + SendMsgSize(B), this script compares:
 
 Output is a grouped CSV (one section per collective).
 
-Useage: python3 analyze_perf_report.py --perf-dir /home/guoqiong/git/torchcomms/perf_results_binding --output-csv /home/guoqiong/git/torchcomms/perf_results_binding/analyze_perf_report.csv
+Useage: python3 torchcomms/comms/torchcomms/tests/perf/py/analyze_perf_report.py --perf-dir /home/guoqiong/git/torchcomms/perf_results_binding
 """
 
 from __future__ import annotations
@@ -34,6 +34,19 @@ CSV_HEADER = [
     "PctDiff_xpu_comms_vs_c10d(%)",
     "PctDiff_cuda_comms_vs_c10d(%)",
     "gapChange(%)",
+]
+SUMMARY_CSV_HEADER = [
+    "Collective",
+    "RowsUsed",
+    "Avg_gapChange(%)",
+    "AbsGapChangeGT20",
+    "Avg_PctDiff_cuda_comms_vs_c10d(%)",
+    "AbsCudaGT20",
+    "Avg_PctDiff_xpu_comms_vs_c10d(%)",
+    "AbsXpuGT20",
+    "GapDirection",
+    "CudaDirection",
+    "XpuDirection",
 ]
 
 
@@ -108,6 +121,23 @@ def fmt_num(val: float) -> str:
     return f"{val:.2f}"
 
 
+def avg_finite(values: list[float]) -> float:
+    finite = [v for v in values if math.isfinite(v)]
+    if not finite:
+        return float("nan")
+    return sum(finite) / len(finite)
+
+
+def direction(val: float) -> str:
+    if math.isnan(val):
+        return "nan"
+    if val > 0:
+        return "speedup"
+    if val < 0:
+        return "slowdown"
+    return "flat"
+
+
 def default_perf_dir() -> Path:
     script = Path(__file__).resolve()
     repo_perf = script.parents[5] / "perf_results"
@@ -176,6 +206,75 @@ def write_comprehensive_csv(
     return wrote_any
 
 
+def write_summary_csv(
+    summary_csv: Path,
+    xpu_comms: dict[str, dict[int, float]],
+    cuda_comms: dict[str, dict[int, float]],
+    xpu_c10d: dict[str, dict[int, float]],
+    cuda_c10d: dict[str, dict[int, float]],
+) -> bool:
+    wrote_any = False
+    summary_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    common_collectives = sorted(
+        set(xpu_comms) & set(cuda_comms) & set(xpu_c10d) & set(cuda_c10d)
+    )
+
+    with summary_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(SUMMARY_CSV_HEADER)
+
+        for coll in common_collectives:
+            common_sizes = sorted(
+                set(xpu_comms[coll])
+                & set(cuda_comms[coll])
+                & set(xpu_c10d[coll])
+                & set(cuda_c10d[coll])
+            )
+            if not common_sizes:
+                continue
+
+            wrote_any = True
+            last4_sizes = common_sizes[-4:]
+            gap_vals: list[float] = []
+            cuda_vals: list[float] = []
+            xpu_vals: list[float] = []
+
+            for size in last4_sizes:
+                avg_xpu_comms = xpu_comms[coll][size]
+                avg_cuda_comms = cuda_comms[coll][size]
+                avg_xpu_c10d = xpu_c10d[coll][size]
+                avg_cuda_c10d = cuda_c10d[coll][size]
+
+                pct_comms_xpu_vs_cuda = pct_diff_val(avg_cuda_comms, avg_xpu_comms)
+                pct_c10d_xpu_vs_cuda = pct_diff_val(avg_cuda_c10d, avg_xpu_c10d)
+                gap_vals.append(pct_comms_xpu_vs_cuda - pct_c10d_xpu_vs_cuda)
+                cuda_vals.append(pct_diff_val(avg_cuda_c10d, avg_cuda_comms))
+                xpu_vals.append(pct_diff_val(avg_xpu_c10d, avg_xpu_comms))
+
+            avg_gap = avg_finite(gap_vals)
+            avg_cuda = avg_finite(cuda_vals)
+            avg_xpu = avg_finite(xpu_vals)
+
+            writer.writerow(
+                [
+                    coll,
+                    len(last4_sizes),
+                    fmt_num(avg_gap),
+                    "Yes" if (math.isfinite(avg_gap) and abs(avg_gap) > 20) else "No",
+                    fmt_num(avg_cuda),
+                    "Yes" if (math.isfinite(avg_cuda) and abs(avg_cuda) > 20) else "No",
+                    fmt_num(avg_xpu),
+                    "Yes" if (math.isfinite(avg_xpu) and abs(avg_xpu) > 20) else "No",
+                    direction(avg_gap),
+                    direction(avg_cuda),
+                    direction(avg_xpu),
+                ]
+            )
+
+    return wrote_any
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Create comprehensive CUDA/XPU and comms/c10d perf comparison CSV."
@@ -216,6 +315,12 @@ def main() -> int:
         default=None,
         help="Path to output CSV. Default: <perf-dir>/analyze_perf_report.csv",
     )
+    parser.add_argument(
+        "--summary-csv",
+        type=Path,
+        default=None,
+        help="Path to summary CSV. Default: <perf-dir>/analyze_perf_report_summary.csv",
+    )
     args = parser.parse_args()
 
     try:
@@ -246,6 +351,7 @@ def main() -> int:
     cuda_c10d = parse_log(cuda_c10d_log)
 
     output_csv = args.output_csv or (args.perf_dir / "analyze_perf_report.csv")
+    summary_csv = args.summary_csv or (args.perf_dir / "analyze_perf_report_summary.csv")
 
     print(f"XPU  comms log: {xpu_comms_log}")
     print(f"CUDA comms log: {cuda_comms_log}")
@@ -259,13 +365,25 @@ def main() -> int:
         xpu_c10d,
         cuda_c10d,
     )
+    wrote_any_summary = write_summary_csv(
+        summary_csv,
+        xpu_comms,
+        cuda_comms,
+        xpu_c10d,
+        cuda_c10d,
+    )
 
     if not wrote_any:
         print("No overlapping collective/message-size entries across all four logs.")
         print(f"CSV report written to: {output_csv}")
+        print(f"Summary CSV written to: {summary_csv}")
         return 1
 
     print(f"CSV report written to: {output_csv}")
+    if wrote_any_summary:
+        print(f"Summary CSV written to: {summary_csv}")
+    else:
+        print(f"Summary CSV written to: {summary_csv} (no overlapping rows)")
     return 0
 
 
