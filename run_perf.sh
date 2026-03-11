@@ -45,7 +45,7 @@ repo=${BASE_HOME}/git/torchcomms/comms/torchcomms
 ln -sf $site/_comms*.so $repo/
 [ -f $site/libtorchcomms.so ] && ln -sf $site/libtorchcomms.so $repo/
 
-RESULTS_DIR=${RESULTS_DIR:-${BASE_HOME}/git/torchcomms/perf_results}
+RESULTS_DIR=${RESULTS_DIR:-${BASE_HOME}/git/torchcomms/perf_results_binding}
 mkdir -p "$RESULTS_DIR"
 timestamp=$(date +%Y%m%d_%H%M%S)
 
@@ -59,6 +59,7 @@ for impl_tag in $impl_list; do
   results_file="$RESULTS_DIR/collective_perf_${timestamp}_${TEST_DEVICE}_${impl_tag}.log"
 
   {
+	  B
     echo "Collective perf run started: $(date -Iseconds)"
     echo "Host: $(hostname)"
     echo "Cluster: ${CLUSTER}"
@@ -75,3 +76,8 @@ for impl_tag in $impl_list; do
   torchrun --nproc_per_node=${NPROC_PER_NODE} -m ${test_module} \
     all --iters 100 | tee -a "$results_file"
 done
+
+# run analysis
+python3 /home/guoqiong/git/torchcomms/comms/torchcomms/tests/perf/py/analyze_perf_report.py \
+  --perf-dir /home/guoqiong/git/torchcomms/perf_results_binding
+
