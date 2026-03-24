@@ -475,74 +475,67 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    try:
-        xpu_comms_log = args.xpu_comms_log or find_latest_log(
-            args.perf_dir, must_include=["xpu", "comms"]
-        )
-        cuda_comms_log = args.cuda_comms_log or find_latest_log(
-            args.perf_dir, must_include=["cuda", "comms"]
-        )
-        xpu_c10d_log = args.xpu_c10d_log or find_latest_log(
-            args.perf_dir, must_include=["xpu"], any_include=["c10d", "c10"]
-        )
-        cuda_c10d_log = args.cuda_c10d_log or find_latest_log(
-            args.perf_dir, must_include=["cuda"], any_include=["c10d", "c10"]
-        )
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 2
+    def _try_find(must: list[str], any_inc: list[str] | None = None, explicit: Path | None = None) -> Path | None:
+        if explicit:
+            return explicit
+        try:
+            return find_latest_log(args.perf_dir, must_include=must, any_include=any_inc)
+        except FileNotFoundError:
+            return None
 
-    for p in [xpu_comms_log, cuda_comms_log, xpu_c10d_log, cuda_c10d_log]:
-        if not p.exists() or p.stat().st_size == 0:
-            print(f"ERROR: missing or empty log: {p}", file=sys.stderr)
-            return 2
+    xpu_comms_log = _try_find(["xpu", "comms"], explicit=args.xpu_comms_log)
+    cuda_comms_log = _try_find(["cuda", "comms"], explicit=args.cuda_comms_log)
+    xpu_c10d_log = _try_find(["xpu"], ["c10d", "c10"], explicit=args.xpu_c10d_log)
+    cuda_c10d_log = _try_find(["cuda"], ["c10d", "c10"], explicit=args.cuda_c10d_log)
 
-    xpu_comms = parse_log(xpu_comms_log)
-    cuda_comms = parse_log(cuda_comms_log)
-    xpu_c10d = parse_log(xpu_c10d_log)
-    cuda_c10d = parse_log(cuda_c10d_log)
+    xpu_comms: dict[str, dict[int, float]] = parse_log(xpu_comms_log) if xpu_comms_log else {}
+    cuda_comms: dict[str, dict[int, float]] = parse_log(cuda_comms_log) if cuda_comms_log else {}
+    xpu_c10d: dict[str, dict[int, float]] = parse_log(xpu_c10d_log) if xpu_c10d_log else {}
+    cuda_c10d: dict[str, dict[int, float]] = parse_log(cuda_c10d_log) if cuda_c10d_log else {}
 
     output_csv = args.output_csv or (args.perf_dir / "analyze_perf_report.csv")
     summary_csv = args.summary_csv or (args.perf_dir / "analyze_perf_report_summary.csv")
     vs_last_csv = args.vs_last_csv or (args.perf_dir / "analyze_perf_report_vs_last.csv")
 
-    print(f"XPU  comms log: {xpu_comms_log}")
-    print(f"CUDA comms log: {cuda_comms_log}")
-    print(f"XPU  c10d  log: {xpu_c10d_log}")
-    print(f"CUDA c10d  log: {cuda_c10d_log}")
+    print(f"XPU  comms log: {xpu_comms_log or '(not found)'}")
+    print(f"CUDA comms log: {cuda_comms_log or '(not found)'}")
+    print(f"XPU  c10d  log: {xpu_c10d_log or '(not found)'}")
+    print(f"CUDA c10d  log: {cuda_c10d_log or '(not found)'}")
 
-    wrote_any = write_comprehensive_csv(
-        output_csv,
-        xpu_comms,
-        cuda_comms,
-        xpu_c10d,
-        cuda_c10d,
-    )
-    wrote_any_summary = write_summary_csv(
-        summary_csv,
-        xpu_comms,
-        cuda_comms,
-        xpu_c10d,
-        cuda_c10d,
-    )
+    wrote_any = False
+    wrote_any_summary = False
+
+    # Full cross-device comparison requires all 4 logs
+    if xpu_comms and cuda_comms and xpu_c10d and cuda_c10d:
+        wrote_any = write_comprehensive_csv(
+            output_csv, xpu_comms, cuda_comms, xpu_c10d, cuda_c10d,
+        )
+        wrote_any_summary = write_summary_csv(
+            summary_csv, xpu_comms, cuda_comms, xpu_c10d, cuda_c10d,
+        )
+    else:
+        missing = []
+        if not xpu_comms:
+            missing.append("xpu-comms")
+        if not cuda_comms:
+            missing.append("cuda-comms")
+        if not xpu_c10d:
+            missing.append("xpu-c10d")
+        if not cuda_c10d:
+            missing.append("cuda-c10d")
+        print(f"Skipping full cross-device comparison (missing: {', '.join(missing)})")
+
+    # vs-last comparison only needs XPU logs across multiple dates
     wrote_any_vs_last = compare_against_last(args.perf_dir, vs_last_csv)
 
-    if not wrote_any:
-        print("No overlapping collective/message-size entries across all four logs.")
+    if wrote_any:
         print(f"CSV report written to: {output_csv}")
-        print(f"Summary CSV written to: {summary_csv}")
-        print(f"Vs-last CSV written to: {vs_last_csv}")
-        return 1
-
-    print(f"CSV report written to: {output_csv}")
     if wrote_any_summary:
         print(f"Summary CSV written to: {summary_csv}")
-    else:
-        print(f"Summary CSV written to: {summary_csv} (no overlapping rows)")
     if wrote_any_vs_last:
         print(f"Vs-last CSV written to: {vs_last_csv}")
     else:
-        print(f"Vs-last CSV written to: {vs_last_csv} (not enough xpu date history)")
+        print(f"Vs-last CSV written to: {vs_last_csv} (not enough date history)")
     return 0
 
 
