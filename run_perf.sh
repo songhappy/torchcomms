@@ -8,10 +8,6 @@ set -euo pipefail
 #   CLUSTER=polaris  bash run_perf.sh          # CUDA on Polaris
 #   NPROC_PER_NODE=2 COMM_IMPL=comms bash run_perf.sh
 #
-# Analyze results only (no benchmarks):
-#   python3 comms/torchcomms/tests/perf/py/analyze_perf_report.py \
-#       --perf-dir ~/git/torchcomms/perf_results_03242026
-#
 # Environment overrides (all optional):
 #   CLUSTER          borealis | polaris              (default: borealis)
 #   NPROC_PER_NODE   number of GPUs per node         (default: 4)
@@ -130,13 +126,15 @@ case "$COMM_IMPL" in
     ;;
 esac
 
-# ── CPU governor: performance mode (requires sudo) ────────────────────────
-echo "Setting CPU governor to performance …"
-# Uncomment the next line if you have passwordless sudo for cpupower:
-# sudo /usr/bin/cpupower frequency-set -g performance
-echo "Current CPU governors:"
-cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort | uniq
-echo
+# ── CPU governor: performance mode (borealis only, requires sudo) ──────────
+if [[ "$CLUSTER" == "borealis" ]]; then
+  echo "Setting CPU governor to performance …"
+  # Uncomment the next line if you have passwordless sudo for cpupower:
+  # sudo /usr/bin/cpupower frequency-set -g performance
+  echo "Current CPU governors:"
+  cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort | uniq
+  echo
+fi
 
 # ── Symlink compiled extensions from site-packages into the repo tree ─────
 site=${BASE_HOME}/miniforge3/envs/comms/lib/python3.10/site-packages/torchcomms
@@ -196,13 +194,15 @@ for impl_tag in $impl_list; do
   ' | tee -a "$results_file"
 done
 
-# ── Restore CPU governor ──────────────────────────────────────────────────
-echo
-echo "Restoring CPU governor to ondemand …"
-# Uncomment the next line if you have passwordless sudo for cpupower:
-# sudo /usr/bin/cpupower frequency-set -g ondemand
-echo "Current CPU governors:"
-cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort | uniq
+# ── Restore CPU governor (borealis only) ──────────────────────────────────
+if [[ "$CLUSTER" == "borealis" ]]; then
+  echo
+  echo "Restoring CPU governor to ondemand …"
+  # Uncomment the next line if you have passwordless sudo for cpupower:
+  # sudo /usr/bin/cpupower frequency-set -g ondemand
+  echo "Current CPU governors:"
+  cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor | sort | uniq
+fi
 
 # ── Analyze results ───────────────────────────────────────────────────────
 echo
