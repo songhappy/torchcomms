@@ -47,7 +47,12 @@ esac
 
 # ── Environment setup ──────────────────────────────────────────────────────
 BASE_HOME=/home/${CLUSTER_USER}
-source "${BASE_HOME}/env-3.sh"
+# env-3.sh sets up oneAPI/compiler paths; only needed on borealis
+if [[ -f "${BASE_HOME}/env-3.sh" ]]; then
+  set +u
+  source "${BASE_HOME}/env-3.sh"
+  set -u
+fi
 
 TORCHCOMMS_ENV_BIN="${BASE_HOME}/miniforge3/envs/comms/bin"
 TORCHRUN_BIN=${TORCHRUN_BIN:-${TORCHCOMMS_ENV_BIN}/torchrun}
