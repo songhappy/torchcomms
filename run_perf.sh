@@ -196,7 +196,7 @@ for impl_tag in $impl_list; do
       exec taskset -c "${__rank_cpu}" "${PYTHON_BIN}" -m "${TEST_MODULE}" all --iters 100
     fi
     exec "${PYTHON_BIN}" -m "${TEST_MODULE}" all --iters 100
-  ' | tee -a "$results_file"
+  ' | tee -a "$results_file" || echo "WARNING: ${impl_tag} test exited with non-zero status $?" | tee -a "$results_file"
 done
 
 # ── Restore CPU governor (borealis only) ──────────────────────────────────
