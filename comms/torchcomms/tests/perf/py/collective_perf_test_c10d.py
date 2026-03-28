@@ -1,35 +1,29 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-unsafe
 
+"""
+collective_perf_test_c10d.py — Collective perf tests using pure torch.distributed (c10d).
+
+This uses the standard ProcessGroup path with NO torchcomms routing.
+For the torchcomms-via-c10d variant, see collective_perf_test_c10d_comms.py.
+
+Launch with:
+  torchrun --nproc_per_node=<N> -m torchcomms.tests.perf.py.collective_perf_test_c10d [args]
+"""
+
 import os
 import sys
-from typing import Optional, Tuple
+from typing import Any
 
 import torch
 import torch.distributed as dist
-import torchcomms
-from torchcomms.tests.perf.py.all_gather_perf import run_all_gather_perf
-from torchcomms.tests.perf.py.all_gather_single_perf import run_all_gather_single_perf
-from torchcomms.tests.perf.py.all_reduce_perf import run_all_reduce_perf
-from torchcomms.tests.perf.py.all_to_all_perf import run_all_to_all_perf
-from torchcomms.tests.perf.py.all_to_all_single_perf import run_all_to_all_single_perf
-from torchcomms.tests.perf.py.barrier_perf import run_barrier_perf
-from torchcomms.tests.perf.py.broadcast_perf import run_broadcast_perf
-from torchcomms.tests.perf.py.gather_perf import run_gather_perf
-from torchcomms.tests.perf.py.perf_test_helpers import (
+from torchcomms.tests.perf.py.collective_perf_test import (
     dtype_to_string,
-    parse_dtype,
-    PerfParams,
+    parse_args,
     print_usage,
+    run_collectives,
     validate_params,
 )
-from torchcomms.tests.perf.py.reduce_perf import run_reduce_perf
-from torchcomms.tests.perf.py.reduce_scatter_perf import run_reduce_scatter_perf
-from torchcomms.tests.perf.py.reduce_scatter_single_perf import (
-    run_reduce_scatter_single_perf,
-)
-from torchcomms.tests.perf.py.scatter_perf import run_scatter_perf
-from torchcomms.tests.perf.py.send_recv_perf import run_send_recv_perf
 
 
 class C10dComm:
@@ -46,7 +40,7 @@ class C10dComm:
         return dist.get_world_size()
 
     def all_reduce(
-        self, tensor: torch.Tensor, op: torchcomms.ReduceOp, async_op: bool = False
+        self, tensor: torch.Tensor, op: Any, async_op: bool = False
     ):
         del op
         return dist.all_reduce(tensor, op=dist.ReduceOp.SUM, async_op=async_op)
@@ -65,7 +59,7 @@ class C10dComm:
         self,
         output_tensor: torch.Tensor,
         input_list: list[torch.Tensor],
-        op: torchcomms.ReduceOp,
+        op: Any,
         async_op: bool,
     ):
         del op
@@ -77,7 +71,7 @@ class C10dComm:
         self,
         output_tensor: torch.Tensor,
         input_tensor: torch.Tensor,
-        op: torchcomms.ReduceOp,
+        op: Any,
         async_op: bool,
     ):
         del op
@@ -102,7 +96,7 @@ class C10dComm:
         return dist.broadcast(tensor, src=root, async_op=async_op)
 
     def reduce(
-        self, tensor: torch.Tensor, root: int, op: torchcomms.ReduceOp, async_op: bool
+        self, tensor: torch.Tensor, root: int, op: Any, async_op: bool
     ):
         del op
         return dist.reduce(tensor, dst=root, op=dist.ReduceOp.SUM, async_op=async_op)
@@ -145,86 +139,10 @@ class C10dComm:
             dist.destroy_process_group()
 
 
-# Map collective names to their perf functions
-COLLECTIVE_RUNNERS = {
-    "all_reduce": run_all_reduce_perf,
-    "all_gather": run_all_gather_perf,
-    "all_gather_single": run_all_gather_single_perf,
-    "reduce_scatter": run_reduce_scatter_perf,
-    "reduce_scatter_single": run_reduce_scatter_single_perf,
-    "all_to_all": run_all_to_all_perf,
-    "all_to_all_single": run_all_to_all_single_perf,
-    "broadcast": run_broadcast_perf,
-    "reduce": run_reduce_perf,
-    "scatter": run_scatter_perf,
-    "gather": run_gather_perf,
-    "send_recv": run_send_recv_perf,
-    "barrier": run_barrier_perf,
-}
-
-
-def parse_args(args: list) -> Tuple[str, PerfParams, Optional[str]]:
-    """Parse command-line arguments and return (collective, params, error)."""
-    collective = "all"
-    params = PerfParams()
-
-    i = 0
-    while i < len(args):
-        arg = args[i]
-
-        if arg in ("--help", "-h"):
-            return collective, params, "help"
-        elif arg == "--async":
-            params.async_op = True
-        elif arg == "--warmup" and i + 1 < len(args):
-            i += 1
-            params.warmup_iterations = int(args[i])
-        elif arg == "--iters" and i + 1 < len(args):
-            i += 1
-            params.measure_iterations = int(args[i])
-        elif arg == "--window" and i + 1 < len(args):
-            i += 1
-            params.iteration_window = int(args[i])
-        elif arg == "--min-size" and i + 1 < len(args):
-            i += 1
-            params.min_size = int(args[i])
-        elif arg == "--max-size" and i + 1 < len(args):
-            i += 1
-            params.max_size = int(args[i])
-        elif arg == "--size-scaling-factor" and i + 1 < len(args):
-            i += 1
-            params.size_scaling_factor = int(args[i])
-        elif arg == "--dtype" and i + 1 < len(args):
-            i += 1
-            params.dtype = parse_dtype(args[i])
-        elif not arg.startswith("-"):
-            collective = arg
-
-        i += 1
-
-    return collective, params, None
-
-
-def run_collectives(
-    collective: str,
-    comm: C10dComm,
-    params: PerfParams,
-    device: torch.device,
-) -> None:
-    """Run the specified collective performance test(s)."""
-    if collective == "all":
-        for runner in COLLECTIVE_RUNNERS.values():
-            runner(comm, params, device)
-    elif collective in COLLECTIVE_RUNNERS:
-        COLLECTIVE_RUNNERS[collective](comm, params, device)
-
-
 def _resolve_backend(device: torch.device) -> str:
     backend = os.environ.get("TEST_BACKEND")
     if backend:
         return backend
-    if device.type == "cpu":
-        return "gloo"
     if device.type == "xpu":
         return "xccl"
     return "nccl"
@@ -234,15 +152,12 @@ def _setup_device() -> torch.device:
     requested = os.environ.get("TEST_DEVICE", "cuda")
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
-    if requested == "cuda":
-        torch.cuda.set_device(local_rank)
-        return torch.device("cuda", local_rank)
-
     if requested == "xpu":
         torch.xpu.set_device(local_rank)
         return torch.device("xpu", local_rank)
 
-    return torch.device("cpu")
+    torch.cuda.set_device(local_rank)
+    return torch.device("cuda", local_rank)
 
 
 def main() -> int:
