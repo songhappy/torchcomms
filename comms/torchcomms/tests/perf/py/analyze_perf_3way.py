@@ -76,6 +76,7 @@ def find_latest_log(
     perf_dir: Path,
     must_include: list[str],
     any_include: list[str] | None = None,
+    must_exclude: list[str] | None = None,
 ) -> Path | None:
     """Find the most recent log matching the given tokens."""
     candidates: list[Path] = []
@@ -87,6 +88,8 @@ def find_latest_log(
         if any(token.lower() not in name for token in must_include):
             continue
         if any_include and not any(token.lower() in name for token in any_include):
+            continue
+        if must_exclude and any(token.lower() in name for token in must_exclude):
             continue
         candidates.append(p)
 
@@ -271,10 +274,11 @@ def main() -> int:
         help="Path to XPU c10d log. Auto-detected if omitted.",
     )
     parser.add_argument(
-        "--distwrap-log",
+        "--distwrap-log", "--c10d-comms-log",
+        dest="distwrap_log",
         type=Path,
         default=None,
-        help="Path to XPU distwrap log. Auto-detected if omitted.",
+        help="Path to XPU c10d_comms (distwrap) log. Auto-detected if omitted.",
     )
     parser.add_argument(
         "--output-csv",
@@ -290,20 +294,20 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Locate logs
+    # Locate logs — names are like collective_perf_*_xpu_{comms,c10d,c10d_comms}.log
     comms_log = args.comms_log or find_latest_log(
-        args.perf_dir, must_include=["xpu", "comms"], any_include=None,
+        args.perf_dir, must_include=["xpu", "comms"], must_exclude=["c10d_comms"],
     )
     c10d_log = args.c10d_log or find_latest_log(
-        args.perf_dir, must_include=["xpu"], any_include=["c10d", "c10"],
+        args.perf_dir, must_include=["xpu", "c10d"], must_exclude=["c10d_comms"],
     )
     distwrap_log = args.distwrap_log or find_latest_log(
-        args.perf_dir, must_include=["xpu", "distwrap"],
+        args.perf_dir, must_include=["xpu", "c10d_comms"],
     )
 
-    print(f"XPU comms    log: {comms_log or '(not found)'}")
-    print(f"XPU c10d     log: {c10d_log or '(not found)'}")
-    print(f"XPU distwrap log: {distwrap_log or '(not found)'}")
+    print(f"XPU comms      log: {comms_log or '(not found)'}")
+    print(f"XPU c10d       log: {c10d_log or '(not found)'}")
+    print(f"XPU c10d_comms log: {distwrap_log or '(not found)'}")
 
     missing = []
     if not comms_log:
@@ -311,7 +315,7 @@ def main() -> int:
     if not c10d_log:
         missing.append("xpu-c10d")
     if not distwrap_log:
-        missing.append("xpu-distwrap")
+        missing.append("xpu-c10d_comms")
 
     if missing:
         print(f"Error: missing logs: {', '.join(missing)}", file=sys.stderr)

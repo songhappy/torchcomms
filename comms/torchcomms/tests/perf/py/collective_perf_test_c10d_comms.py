@@ -2,24 +2,31 @@
 # pyre-unsafe
 
 """
-collective_perf_test_c10d.py — Collective perf tests using pure torch.distributed (c10d).
+collective_perf_test_c10d_comms.py — Collective perf tests using c10d routed through torchcomms.
 
-This uses the standard ProcessGroup path with NO torchcomms routing.
-For the torchcomms-via-c10d variant, see collective_perf_test_c10d_comms.py.
+This sets dist_config.use_torchcomms = True so that init_process_group wraps
+the backend with torchcomms' _BackendWrapper, routing collectives through
+the torchcomms native implementation.
+
+NOTE: Do NOT "import torchcomms" before "import torch".  torch loads
+distributed_c10d at import time, which probes for _BackendWrapper.
+If torchcomms is mid-import (half-initialized), the probe fails and
+_TORCHCOMM_AVAILABLE stays False.  Letting torch load first avoids
+the circular-import issue.
 
 Launch with:
-  torchrun --nproc_per_node=<N> -m torchcomms.tests.perf.py.collective_perf_test_c10d [args]
+  PYTHONPATH=comms torchrun --nproc_per_node=<N> \
+      torchcomms/tests/perf/py/collective_perf_test_c10d_comms.py [args]
 """
 
 import os
 import sys
 from typing import Any
 
-import torch
-import torchcomms  # noqa: F401  — must be imported before torch.distributed
-import torch.distributed as dist
 import torch.distributed.config as dist_config
 dist_config.use_torchcomms = True
+
+import torch.distributed as dist
 
 
 from torchcomms.tests.perf.py.collective_perf_test import (
@@ -50,14 +57,23 @@ def main() -> int:
     device = _setup_device()
     backend = _resolve_backend(device)
 
+    # Verify torchcomms routing is active before init
+    import torch.distributed.distributed_c10d as _dc
+    if rank_zero := (int(os.environ.get("RANK", "0")) == 0):
+        print(f"_TORCHCOMM_AVAILABLE: {_dc._TORCHCOMM_AVAILABLE}")
+        print(f"dist_config.use_torchcomms: {dist_config.use_torchcomms}")
+        print(f"_use_torchcomms_enabled: {_dc._use_torchcomms_enabled()}")
+        if not _dc._use_torchcomms_enabled():
+            print("WARNING: torchcomms routing is NOT active!", file=sys.stderr)
+
     dist.init_process_group(backend=backend, init_method="env://")
     comm = C10dComm(backend)
     rank = comm.get_rank()
     num_ranks = comm.get_size()
 
     if rank == 0:
-        print("C10d Collective Performance Test")
-        print("===============================")
+        print("C10d + TorchComms Collective Performance Test")
+        print("==============================================")
         print(f"Backend: {comm.get_backend()}")
         print(f"Ranks: {num_ranks}")
         print(f"Collective: {collective}")
